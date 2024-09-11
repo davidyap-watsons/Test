@@ -1,0 +1,234 @@
+------------------------ Insert This Year KPI ------------------------------------- 
+
+--[Author Name] : David Yap (WTCMY - Data Analytics Engineer, ITD)
+--[Time Built]  : Aug 2024
+--[Description] : This Last Year KPI script will be perform as a scheduled job to run every week to insert TY KPI into WTCMY_OPSDashboard_KPI_Store table.
+
+-----------------------------------------------------------------------------------
+
+SET var.Datetime = current_date()-7;
+
+INSERT INTO rdm_custom.WTCMY_OPSDashboard_KPI_Store
+
+SELECT DISTINCT
+(SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) as year_week, 
+
+ STO.store_key,
+ ATV.ATV_SUM_NET,
+ ATV.ATV_COUNT_TRA,
+ ATV.ATV,
+ 
+ IPB.IPB, 
+ IPB.IPB_SUM_QUA,
+ IPB.IPB_COUNT_TRA,
+
+ CONVERSION_RATE.CR_PC,
+ CONVERSION_RATE.CR_COUNT_TRANSACTION,
+ CONVERSION_RATE.CONVERSION_RATE,
+
+ BCR.BCR_COUNT_TRA,
+ BCR.BCR_SUM_TRA,
+ BCR.BCR,
+ 
+ PWP.PWP_COUNT,
+ PWP.PWP_COUNT_TRA,
+ PWP.PWP, 
+ 
+ CRM.Card_Sold,
+ 
+ GOB_GOBE.GOBE_SUM_TRA,
+ GOB_GOBE.GOBE, 
+
+ GOB_GOBE.GOB_SUM_TRA,
+ GOB_GOBE.GOB,
+ GOB_GOBE.Total_Sales
+
+FROM aggregates.store STO
+
+--ATV 
+JOIN
+(
+  SELECT DISTINCT TRA.STORE_KEY, SUM(TRA.TOTAL_NET_PRICE) AS ATV_SUM_NET, COUNT(TRA.transaction_key) AS ATV_COUNT_TRA, ROUND((SUM(TRA.TOTAL_NET_PRICE)/COUNT(TRA.transaction_key)),1) AS ATV
+  FROM rdm.f_transaction TRA
+  JOIN rdm.d_date DAT1 ON TRA.business_date = DAT1.day_date
+  WHERE DAT1.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime})
+  AND TRA.TOTAL_NET_PRICE <> 0 AND (TRA.STORE_KEY >= 0 AND TRA.STORE_KEY <= 700 OR TRA.STORE_KEY >= 2000) 
+  GROUP BY TRA.STORE_KEY 
+)ATV ON ATV.STORE_KEY = STO.STORE_KEY
+
+
+--IPB
+JOIN
+(
+  SELECT DISTINCT DAT1.year_week,TRA1.STORE_KEY, SUM(TRA1.quantity) AS IPB_SUM_QUA, TRA2.COUNT_TRANSACTION AS IPB_COUNT_TRA, ROUND((SUM(TRA1.quantity)/TRA2.COUNT_TRANSACTION),1) AS IPB
+  FROM rdm.f_transaction_detail TRA1
+  JOIN rdm.d_date DAT1 ON TRA1.business_date = DAT1.day_date
+  INNER JOIN
+  (
+    SELECT DISTINCT TRA2.STORE_KEY, COUNT(DISTINCT TRA2.transaction_key) AS COUNT_TRANSACTION
+    FROM rdm.f_transaction TRA2
+    JOIN rdm.d_date DAT2 ON TRA2.business_date = DAT2.day_date 
+    WHERE DAT2.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND (TRA2.STORE_KEY >= 0 AND TRA2.STORE_KEY <= 700 OR TRA2.STORE_KEY >= 2000) AND TRA2.TOTAL_NET_PRICE <> 0 
+    GROUP BY TRA2.STORE_KEY
+  )TRA2 ON TRA1.STORE_KEY = TRA2.STORE_KEY
+  WHERE DAT1.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND product_key != 99999
+  GROUP BY DAT1.year_week,TRA1.STORE_KEY,COUNT_TRANSACTION
+)IPB ON IPB.STORE_KEY = STO.STORE_KEY
+
+
+--Conversion Rate
+JOIN
+(
+  
+  SELECT DISTINCT STO.STORE_KEY ,DAT3.year_week, TRA3.COUNT_TRANSACTION AS CR_COUNT_TRANSACTION, PC.PC AS CR_PC, ROUND(((TRA3.COUNT_TRANSACTION/PC.PC)*100),1) AS CONVERSION_RATE
+  FROM rdm.d_date DAT3
+
+  INNER JOIN
+  (
+      SELECT DAT3.year_week, PEO.store_key, SUM(PEO.COUNT_IN) AS PC
+      FROM rdm.f_people_counter PEO
+      INNER JOIN rdm.d_date DAT3 ON PEO.date_key = DAT3.date_key
+      WHERE DAT3.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND (PEO.STORE_KEY >= 0 AND PEO.STORE_KEY <= 700 OR PEO.STORE_KEY >= 2000) 
+      GROUP BY DAT3.year_week, PEO.store_key
+  )PC ON PC.YEAR_WEEK = DAT3.YEAR_WEEK
+
+  INNER JOIN
+  (
+      SELECT DAT3.year_week, TRA3.store_key, COUNT(TRA3.TRANSACTION_KEY) AS COUNT_TRANSACTION
+      FROM rdm.f_transaction TRA3
+      INNER JOIN rdm.d_date DAT3 ON TRA3.transaction_date_key = DAT3.date_key
+      WHERE DAT3.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND (TRA3.STORE_KEY >= 0 AND TRA3.STORE_KEY <= 700 OR TRA3.STORE_KEY >= 2000) AND TRA3.TOTAL_NET_PRICE <> 0 
+      GROUP BY DAT3.year_week, TRA3.store_key
+  )TRA3 ON PC.YEAR_WEEK = DAT3.YEAR_WEEK
+
+  INNER JOIN aggregates.store STO ON STO.STORE_KEY = PC.STORE_KEY AND  STO.STORE_KEY = TRA3.STORE_KEY
+  WHERE DAT3.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) 
+
+)CONVERSION_RATE ON STO.STORE_KEY = CONVERSION_RATE.STORE_KEY
+
+
+--BCR
+JOIN
+(
+
+  SELECT DISTINCT STO.STORE_KEY, DAT4.year_week, Basket_Transaction.Basket_Transaction AS BCR_COUNT_TRA, Total_Transaction.Total_Transaction AS BCR_SUM_TRA, ROUND((Basket_Transaction.Basket_Transaction/Total_Transaction.Total_Transaction)*100,1) AS BCR
+  FROM rdm.d_date DAT4
+
+  INNER JOIN
+  (
+      SELECT DISTINCT DAT4.year_week ,TRA4.store_key, COUNT(TRA4.transaction_key) AS Basket_Transaction
+      FROM rdm.f_transaction_detail TRA4
+      JOIN rdm.d_date DAT4 ON TRA4.business_date = DAT4.day_date 
+      WHERE TRA4.PRODUCT_KEY = '95448' AND (TRA4.STORE_KEY >= 0 AND TRA4.STORE_KEY <= 700 OR TRA4.STORE_KEY >= 2000) 
+      AND DAT4.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime})
+      GROUP BY DAT4.year_week ,TRA4.store_key
+  )Basket_Transaction ON Basket_Transaction.year_week = DAT4.year_week
+
+  INNER JOIN
+  (
+      SELECT DISTINCT DAT4.year_week, TRA4.STORE_KEY, COUNT(TRA4.transaction_key) AS Total_Transaction
+      FROM rdm.f_transaction TRA4
+      JOIN rdm.d_date DAT4 ON TRA4.business_date = DAT4.day_date
+      WHERE DAT4.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND (TRA4.STORE_KEY >= 0 AND TRA4.STORE_KEY <= 700 OR TRA4.STORE_KEY >= 2000) 
+      AND TRA4.TOTAL_NET_PRICE <> 0 
+      GROUP BY DAT4.year_week, TRA4.STORE_KEY 
+  )Total_Transaction ON Total_Transaction.year_week = DAT4.year_week
+
+  INNER JOIN aggregates.store STO ON STO.STORE_KEY = Total_Transaction.STORE_KEY AND STO.STORE_KEY = Basket_Transaction.STORE_KEY
+  WHERE DAT4.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) 
+
+)BCR ON STO.STORE_KEY = BCR.STORE_KEY
+
+
+--Total CRM Card Sold
+JOIN
+(
+  SELECT DAT5.year_week, TRA5.store_key, COUNT(transaction_key) AS Card_Sold
+  FROM rdm.f_transaction_detail TRA5
+  JOIN rdm.d_date DAT5 ON TRA5.business_date = DAT5.day_date
+  WHERE TRA5.PRODUCT_KEY IN ('15002','38253','28797','57915','68780','70213','81922','93198','93201','95312','96795','96801','50287','30084','60351','38200','82951') 
+  AND DAT5.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) AND (TRA5.STORE_KEY >= 0 AND TRA5.STORE_KEY <= 700 OR TRA5.STORE_KEY >= 2000) 
+  GROUP BY DAT5.year_week, TRA5.store_key
+)CRM ON STO.STORE_KEY = CRM.store_key
+
+
+--PWP
+JOIN
+(
+  SELECT DISTINCT STO.STORE_KEY, DAT6.year_week, PROM.PWP_COUNT AS PWP_COUNT, Total_Transaction.Total_Transaction AS PWP_COUNT_TRA, ROUND((PROM.PWP_COUNT/Total_Transaction.Total_Transaction)*100,1) AS PWP
+  FROM rdm.d_date DAT6
+  
+  INNER JOIN
+  (
+      SELECT DAT6.year_week, DET.STORE_KEY, count(DET.transaction_date_key) AS PWP_COUNT
+      FROM rdm.d_promo PROM
+      INNER JOIN rdm.f_transaction_promo_detail DET on PROM.promo_key = DET.promo_key
+      INNER JOIN rdm.d_date DAT6 on DET.TRANSACTION_DATE_KEY = DAT6.DATE_KEY
+      WHERE PROM.promo_name like '%PWP%' AND DAT6.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) 
+      AND (DET.STORE_KEY >= 0 AND DET.STORE_KEY <= 700 OR DET.STORE_KEY >= 2000) 
+      GROUP BY DAT6.year_week, DET.STORE_KEY
+  ) PROM ON PROM.year_week = DAT6.year_week
+
+  INNER JOIN
+  (
+     SELECT DISTINCT DAT6.year_week, TRA6.STORE_KEY, COUNT(TRA6.transaction_key) AS Total_Transaction
+     FROM rdm.f_transaction TRA6
+     JOIN rdm.d_date DAT6 ON TRA6.business_date = DAT6.day_date
+     WHERE DAT6.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime})
+     AND TRA6.TOTAL_NET_PRICE <> 0
+     AND (TRA6.STORE_KEY >= 0 AND TRA6.STORE_KEY <= 700 OR TRA6.STORE_KEY >= 2000) 
+     GROUP BY DAT6.year_week, TRA6.STORE_KEY 
+  ) Total_Transaction ON Total_Transaction.year_week = DAT6.year_week
+
+    INNER JOIN aggregates.store STO ON STO.STORE_KEY = Total_Transaction.STORE_KEY AND STO.STORE_KEY = PROM.STORE_KEY
+    WHERE DAT6.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date =${var.Datetime}) 
+)PWP ON STO.STORE_KEY = PWP.store_key
+
+
+--GOB & GOBE
+JOIN
+( 
+ SELECT DISTINCT DAT7.year_week, STO.store_key, GOBE.GOBE AS GOBE_SUM_TRA, GOB.GOB AS GOB_SUM_TRA, Total_Sales.Total_Sales, ROUND(((GOBE.GOBE/Total_Sales.Total_Sales)*100),1) AS GOBE, ROUND(((GOB.GOB/Total_Sales.Total_Sales)*100),1) AS GOB
+  FROM rdm.d_date DAT7
+
+--GOBE
+JOIN
+  (
+    SELECT DAT7.year_week, DET.store_key, SUM(DET.item_total_net_amount) AS GOBE
+    FROM rdm.f_transaction_detail DET
+    INNER JOIN rdm.d_uda UDA ON DET.product_key = UDA.uda_target
+    INNER JOIN rdm.d_date DAT7 ON DET.TRANSACTION_DATE_KEY = DAT7.DATE_KEY
+    WHERE UDA.uda_type_id = '4' and UDA.code NOT IN ('9') 
+    AND DAT7.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) 
+    AND (DET.STORE_KEY >= 0 AND DET.STORE_KEY <= 700 OR DET.STORE_KEY >= 2000) 
+    GROUP BY  DAT7.year_week, DET.store_key
+  )GOBE ON GOBE.year_week = DAT7.year_week
+
+--GOB
+JOIN
+  (
+    SELECT DAT7.year_week, DET.store_key, SUM(DET.item_total_net_amount) AS GOB
+    FROM rdm.f_transaction_detail DET
+    INNER JOIN rdm.d_uda UDA ON DET.product_key = UDA.uda_target
+    INNER JOIN rdm.d_date DAT7 ON DET.TRANSACTION_DATE_KEY = DAT7.DATE_KEY
+    WHERE UDA.uda_type_id = '4' and UDA.code in (1,2,5,6) 
+    AND DAT7.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime})
+    AND (DET.STORE_KEY >= 0 AND DET.STORE_KEY <= 700 OR DET.STORE_KEY >= 2000) 
+    GROUP BY  DAT7.year_week, DET.store_key
+  )GOB ON GOB.year_week = DAT7.year_week
+
+--Total Transaction
+JOIN
+  (
+    SELECT DAT7.year_week, DET.store_key, SUM(DET.item_total_net_amount) AS Total_Sales
+    FROM rdm.f_transaction_detail DET
+    INNER JOIN rdm.d_date DAT7 ON DET.TRANSACTION_DATE_KEY = DAT7.DATE_KEY
+    WHERE DAT7.year_week = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime})
+    AND (DET.STORE_KEY >= 0 AND DET.STORE_KEY <= 700 OR DET.STORE_KEY >= 2000) 
+    GROUP BY  DAT7.year_week,DET.store_key
+  )Total_Sales ON Total_Sales.year_week = DAT7.year_week
+
+  INNER JOIN aggregates.store STO ON STO.STORE_KEY = Total_Sales.STORE_KEY AND STO.STORE_KEY = GOB.STORE_KEY AND STO.STORE_KEY = GOBE.STORE_KEY
+  WHERE DAT7.year_week  = (SELECT year_week FROM rdm.d_date WHERE day_date = ${var.Datetime}) 
+
+)GOB_GOBE ON STO.STORE_KEY = GOB_GOBE.STORE_KEY
